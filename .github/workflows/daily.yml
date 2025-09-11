@@ -14,30 +14,31 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Fetch jGrants
         run: python etl/fetch_jgrants.py --out data/jgrants.jsonl
-      - name: Fetch Tokyo pages
-        run: python etl/fetch_pref_pages.py --pref tokyo --out data/tokyo.jsonl
-      - name: Fetch Kanagawa pages
-        run: python etl/fetch_pref_pages.py --pref kanagawa --out data/kanagawa.jsonl
-      - name: Fetch Saitama pages
-        run: python etl/fetch_pref_pages.py --pref saitama --out data/saitama.jsonl
-      - name: Fetch Chiba pages
-        run: python etl/fetch_pref_pages.py --pref chiba --out data/chiba.jsonl
+      - name: Fetch Prefecture pages
+        run: |
+          for pref in tokyo kanagawa saitama chiba; do
+            python etl/fetch_pref_pages.py --pref $pref --out data/$pref.jsonl
+          done
       - name: Fetch SII
         run: python etl/fetch_sii.py --out data/sii.jsonl
       - name: Normalize
         run: python etl/normalize.py data/*.jsonl --out data/normalized.parquet
       - name: Dedupe & Events
         run: python etl/dedupe_and_events.py data/normalized.parquet --out data/events.parquet
+      - name: Authenticate to Google Cloud
+        if: ${{ secrets.GCP_PROJECT != '' }}
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GCP_SA_JSON }}'
       - name: Load to BigQuery
-        if: ${{ env.GCP_PROJECT != '' }}
+        if: ${{ secrets.GCP_PROJECT != '' }}
         run: python etl/load_bq.py data/events.parquet
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
           BQ_DATASET:  grants_hc
           BQ_TABLE:    programs
-          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GCP_SA_JSON }}
       - name: Notify (Slack/Email)
-        if: ${{ env.SLACK_WEBHOOK != '' }}
+        if: ${{ secrets.SLACK_WEBHOOK != '' }}
         run: python etl/notify.py --mode weekly_digest
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}

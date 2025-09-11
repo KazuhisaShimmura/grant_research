@@ -3,15 +3,35 @@
 """
 取得データを共通スキーマに正規化
 """
-import argparse, glob, json, re, pandas as pd, os, yaml
+import argparse
+import glob
+import json
+import pandas as pd
 from datetime import datetime
 
 SCHEMA_COLS = [
-  "program_id","source_url","publisher","title","fiscal_year","domain",
-  "eligibility_json","geography","subsidy_rate","subsidy_cap_jpy","budget_total_jpy",
-  "cost_items_allowed","deadline_type","deadline_at","application_method",
-  "requires_gbizid","docs_urls_json","status","published_at","last_seen_at","content_hash"
-]
+    "program_id",
+    "source_url",
+    "publisher",
+    "title",
+    "fiscal_year",
+    "domain",
+    "eligibility_json",
+    "geography",
+    "subsidy_rate",
+    "subsidy_cap_jpy",
+    "budget_total_jpy",
+    "cost_items_allowed",
+    "deadline_type",
+    "deadline_at",
+    "application_method",
+    "requires_gbizid",
+    "docs_urls_json",
+    "status",
+    "published_at",
+    "last_seen_at",
+    "content_hash"]
+
 
 def norm_jgrants(rec):
     pid = rec.get("id") or rec.get("subsidyId")
@@ -47,6 +67,7 @@ def norm_jgrants(rec):
     )
     return row
 
+
 def norm_pref_page(rec):
     title = rec.get("page_name")
     url = rec.get("source_url")
@@ -69,13 +90,17 @@ def norm_pref_page(rec):
         deadline_at=None,
         application_method="direct",
         requires_gbizid=False,
-        docs_urls_json=json.dumps([l["url"] for l in rec.get("links",[])], ensure_ascii=False),
+        docs_urls_json=json.dumps(
+            [link["url"] for link in rec.get("links", [])],
+            ensure_ascii=False
+        ),
         status="unknown",
         published_at=None,
         last_seen_at=datetime.utcnow().isoformat(),
         content_hash=None
     )
     return row
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -120,6 +145,7 @@ def main():
     df = pd.DataFrame(rows, columns=SCHEMA_COLS)
     df.to_parquet(args.out, index=False)
     print(f"Wrote {len(df)} rows to {args.out}")
+
 
 if __name__ == "__main__":
     main()

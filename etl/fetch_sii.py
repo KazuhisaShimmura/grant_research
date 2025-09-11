@@ -4,12 +4,16 @@
 SIIポータルから省エネ事業の公募メタ情報を抽出（軽量）
 ※本サンプルはリンク一覧の収集に留め、詳細は後段NLPで抽出します。
 """
-import argparse, json, time, requests
+import argparse
+import json
+
+import requests
 from bs4 import BeautifulSoup
 
 INDEX_URLS = [
     "https://sii.or.jp/"
 ]
+
 
 def fetch_index(url):
     r = requests.get(url, timeout=30)
@@ -21,9 +25,11 @@ def fetch_index(url):
         if not href:
             continue
         text = a.get_text(" ", strip=True)
-        if any(k in text for k in ["補助","省エネ","ZEB","交付申請","公募","事業"]):
-            links.append({"url": requests.compat.urljoin(url, href), "text": text})
+        if any(k in text for k in ["補助", "省エネ", "ZEB", "交付申請", "公募", "事業"]):
+            links.append(
+                {"url": requests.compat.urljoin(url, href), "text": text})
     return links
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -36,6 +42,7 @@ def main():
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
     print(f"Wrote {len(rows)} rows to {args.out}")
+
 
 if __name__ == "__main__":
     main()

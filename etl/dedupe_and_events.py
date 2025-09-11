@@ -3,12 +3,18 @@
 """
 近傍重複の解消とイベント化（簡易）
 """
-import argparse, pandas as pd, hashlib, json, re
-from datetime import datetime
+import argparse
+import pandas as pd
+import hashlib
+
 
 def keyish(row):
-    base = f"{row.get('publisher','')}/{row.get('fiscal_year','')}/{row.get('title','')}"
+    base = f"{row.get('publisher',
+                      '')}/{row.get('fiscal_year',
+                                    '')}/{row.get('title',
+                                                  '')}"
     return hashlib.sha1(base.encode("utf-8")).hexdigest()
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -24,6 +30,7 @@ def main():
     df["last_seen_at"] = pd.Timestamp.utcnow().isoformat()
     df.to_parquet(args.out, index=False)
     print(f"Wrote {len(df)} rows to {args.out}")
+
 
 if __name__ == "__main__":
     main()
