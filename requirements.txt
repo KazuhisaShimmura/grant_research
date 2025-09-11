@@ -7,3 +7,4 @@ pdfminer.six
 google-cloud-bigquery
 google-auth
 slack_sdk
+pyyaml
