@@ -1,0 +1,10 @@
+# 共通ソース（全国）
+jgrants:
+  base_url: "https://api.jgrants-portal.go.jp/exp/v1/public/subsidies"
+  keywords: ["医療","介護","病院","診療所","訪問看護","電子カルテ","医療DX","介護DX","省エネ","ZEB"]
+  page_size: 100
+
+sii:
+  index_urls:
+    - "https://sii.or.jp/"
+  # 個別事業URLは実行時に辿って抽出

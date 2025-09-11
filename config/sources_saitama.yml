@@ -1,0 +1,27 @@
+publisher: 埼玉県
+geography_code: JP-11
+pages:
+- name: 病院・医療機関向け情報（補助・支援 総合入口）
+  url: https://www.pref.saitama.lg.jp/kenko/iryo/joho/index.html
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf
+- name: 協定締結医療機関 施設・設備整備事業補助金
+  url: https://www.pref.saitama.lg.jp/a0710/kyouteishisetsusetsubi.html
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf
+- name: 看護業務改善のためのICT導入アドバイザー派遣
+  url: https://www.pref.saitama.lg.jp/a0709/ictadviser.html
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf
+- name: 令和7年度 介護テクノロジー定着支援事業（介護ロボット・ICT）
+  url: https://www.pref.saitama.lg.jp/a0603/kaigo-net/seisansei/r7kaigotec.html
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf

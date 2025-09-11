@@ -1,0 +1,33 @@
+publisher: 千葉県
+geography_code: JP-12
+pages:
+- name: 医療機関に対する補助金等（総合入口）
+  url: https://www.pref.chiba.lg.jp/iryou/hojokin/hojokin-index.html
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf
+- name: 生産性向上・職場環境整備等支援事業（医療機関）
+  url: https://www.pref.chiba.lg.jp/iryou/seisanseikoujou.html
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf
+- name: 医療機関等 物価高騰対策支援事業（支援金）
+  url: https://www.pref.chiba.lg.jp/iryou/chiikiiryou/iryouhoujin/bukkakoutou06.html
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf
+- name: 千葉県 介護テクノロジー定着支援（介護ロボット・ICT）
+  url: https://www.pref.chiba.lg.jp/koufuku/kaigorobot/
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf
+- name: （情報一覧）令和7年度 介護テクノロジー定着支援事業
+  url: https://www.pref.chiba.lg.jp/koufuku/kaigorobot/kaigorobotjyouhou.html
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf

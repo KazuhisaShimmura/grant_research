@@ -1,0 +1,51 @@
+publisher: 東京都
+geography_code: JP-13
+pages:
+- name: 民間医療機関向け補助金（総合入口）
+  url: https://www.hokeniryo.metro.tokyo.lg.jp/iryo/jigyo/h_gaiyou
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf
+- name: 生産性向上・職場環境整備等支援事業補助金
+  url: https://www.hokeniryo.metro.tokyo.lg.jp/iryo/jigyo/productivity
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf
+- name: 病院診療情報デジタル推進事業（電子カルテ支援）
+  url: https://www.hokeniryo.metro.tokyo.lg.jp/iryo/jigyo/ictkiban
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf
+- name: 診療所診療情報デジタル推進事業
+  url: https://www.hokeniryo.metro.tokyo.lg.jp/iryo/jigyo/h_gaiyou/clinic_digital_suishin
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf
+- name: 感染症対策系 補助金（協定締結医療機関 等）
+  url: https://www.hokeniryo.metro.tokyo.lg.jp/kansen/iryokikan/kyouteihojyokin
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf
+- name: 次世代介護機器導入促進支援（東京都福祉保健財団）
+  url: https://www.fukushizaidan.jp/206genbakaikaku/jisedai/
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf
+- name: 次世代介護機器導入（募集要項PDF 例）
+  url: https://www.fukushizaidan.jp/wp-content/uploads/2025/08/206_20250827_%E5%8B%9F%E9%9B%86%E8%A6%81%E9%A0%85%EF%BC%88%E5%B0%8E%E5%85%A5%E6%94%AF%E6%8F%B4%E4%BA%8B%E6%A5%AD%EF%BC%89.pdf
+  selectors:
+    updated_at: ''
+    links: a
+    pdf_hint: .pdf
+- name: 省エネ補助金（SII：令和6補正 省エネ投資促進支援）
+  url: https://sii.or.jp/setsubi06r/
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf

@@ -1,0 +1,9 @@
+requests
+beautifulsoup4
+lxml
+pandas
+pyarrow
+pdfminer.six
+google-cloud-bigquery
+google-auth
+slack_sdk

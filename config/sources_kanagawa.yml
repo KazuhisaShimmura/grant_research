@@ -1,0 +1,21 @@
+publisher: 神奈川県
+geography_code: JP-14
+pages:
+- name: 看護業務等ICT導入支援事業費補助（病院向け）
+  url: https://www.pref.kanagawa.jp/docs/t3u/ict.html
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf
+- name: 介護ロボット・ICT導入支援事業費補助金
+  url: https://www.pref.kanagawa.jp/docs/u6s/cnt/f420373/p1075201.html
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf
+- name: （参考）神奈川福祉サービス振興会：介護ロボット導入（令和6年度 実施例）
+  url: https://carerobot.kanafuku.jp/introduction/
+  selectors:
+    updated_at: time, .date, .update
+    links: a
+    pdf_hint: .pdf
