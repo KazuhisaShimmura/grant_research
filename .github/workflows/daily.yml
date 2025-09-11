@@ -26,19 +26,21 @@ jobs:
       - name: Dedupe & Events
         run: python etl/dedupe_and_events.py data/normalized.parquet --out data/events.parquet
       - name: Authenticate to Google Cloud
-        if: secrets.GCP_PROJECT != ''
+        env:
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+        if: env.GCP_PROJECT != ''
         uses: 'google-github-actions/auth@v2'
         with:
           credentials_json: '${{ secrets.GCP_SA_JSON }}'
       - name: Load to BigQuery
-        if: secrets.GCP_PROJECT != ''
-        run: python etl/load_bq.py data/events.parquet
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
           BQ_DATASET:  grants_hc
           BQ_TABLE:    programs
+        if: env.GCP_PROJECT != ''
+        run: python etl/load_bq.py data/events.parquet
       - name: Notify (Slack/Email)
-        if: secrets.SLACK_WEBHOOK != ''
-        run: python etl/notify.py --mode weekly_digest
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        if: env.SLACK_WEBHOOK != ''
+        run: python etl/notify.py --mode weekly_digest
