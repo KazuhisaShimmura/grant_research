@@ -16,12 +16,12 @@
    - `GCP_PROJECT` : BigQueryのプロジェクトID（使わない場合は空でOK）
    - `GCP_SA_JSON` : サービスアカウントJSON（使わない場合は空でOK）
    - `SLACK_WEBHOOK` : 通知用Webhook（使わない場合は空でOK）
-3. `workflows/daily.yml` のcronは JST 07:30 に設定済（UTC換算で 22:30）
+3. `.github/workflows/daily.yml` のcronは JST 07:30 に設定済（UTC換算で 22:30）
 4. `requirements.txt` で依存をインストール
-5. `workflows/daily.yml` から **Run workflow** を手動実行して初回データを流し込み
+5. `.github/workflows/daily.yml` から **Run workflow** を手動実行して初回データを流し込み
 
 ## BigQueryを使わない場合
-- `etl/load_bq.py` はスキップ可能。`workflows/daily.yml` の該当ステップをコメントアウトしてください。
+- `etl/load_bq.py` はスキップ可能。`.github/workflows/daily.yml` の該当ステップをコメントアウトしてください。
 - データは `data/normalized.parquet` および `data/events.parquet` に出力されます。
 
 ## 他都道府県の追加
