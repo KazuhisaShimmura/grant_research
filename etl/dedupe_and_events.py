@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import re
+import sys
 from typing import Any
 
 import numpy as np
@@ -99,6 +100,7 @@ def main() -> None:
         "application_period",
         "source_url",
         "subsidy_cap_jpy",
+        "employee_limit",
     ]
     for col in required:
         if col not in df.columns:
@@ -113,13 +115,31 @@ def main() -> None:
     cap_numeric = pd.to_numeric(df["subsidy_cap_jpy"], errors="coerce")
     cap_text = cap_numeric.map(lambda x: "" if pd.isna(x) else str(int(x)))
 
-    key_source = title + "|" + geography + "|" + rate + "|" + cap_text + "|" + period + "|" + source
+    employee_numeric = pd.to_numeric(df["employee_limit"], errors="coerce")
+    employee_text = employee_numeric.map(lambda x: "" if pd.isna(x) else str(int(x)))
+
+    key_source = (
+        title
+        + "|"
+        + geography
+        + "|"
+        + rate
+        + "|"
+        + cap_text
+        + "|"
+        + employee_text
+        + "|"
+        + period
+        + "|"
+        + source
+    )
     df["dedupe_key"] = sha1_hex(key_source)
 
     df = df.drop_duplicates(subset=["dedupe_key"], keep="first").copy()
 
     now_utc = pd.Timestamp.now(tz="UTC").normalize()
     deadlines = df["application_period"].apply(parse_period_end)
+    deadlines = pd.to_datetime(deadlines, errors="coerce", utc=True)
     df["status"] = np.where(
         deadlines.isna(),
         "upcoming",
