@@ -30,7 +30,10 @@ def main():
             df[col] = ""
 
     pub = normalize_text(df["publisher"])
-    fy  = normalize_text(df["fiscal_year"].astype(str))
+    # Fiscal year may be numeric or missing; normalize_text can handle NaN directly
+    # If we cast to string beforehand, NaN becomes the literal 'nan' and affects
+    # deduplication keys. Pass the original series so missing values stay empty.
+    fy  = normalize_text(df["fiscal_year"])
     ttl = normalize_text(df["title"])
 
     key_source = pub + "/" + fy + "/" + ttl
