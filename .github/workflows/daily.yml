@@ -11,7 +11,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: 'pip'
+          cache: pip
       - run: pip install -r requirements.txt
       - name: Fetch jGrants
         run: python etl/fetch_jgrants.py --out data/jgrants.jsonl
@@ -27,18 +27,22 @@ jobs:
         run: python etl/normalize.py data/*.jsonl --out data/normalized.parquet
       - name: Dedupe & Events
         run: python etl/dedupe_and_events.py data/normalized.parquet --out data/events.parquet
+      - name: Prepare compressed artifacts
+        run: |
+          gzip -c data/normalized.parquet > data/normalized.parquet.gz
+          gzip -c data/events.parquet > data/events.parquet.gz
       - name: Authenticate to Google Cloud
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
         if: env.GCP_PROJECT != ''
-        uses: 'google-github-actions/auth@v2'
+        uses: google-github-actions/auth@v2
         with:
-          credentials_json: '${{ secrets.GCP_SA_JSON }}'
+          credentials_json: ${{ secrets.GCP_SA_JSON }}
       - name: Load to BigQuery
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
-          BQ_DATASET:  grants_hc
-          BQ_TABLE:    programs
+          BQ_DATASET: grants_hc
+          BQ_TABLE: programs
         if: env.GCP_PROJECT != ''
         run: python etl/load_bq.py data/events.parquet
       - name: Notify (Slack/Email)
@@ -46,8 +50,10 @@ jobs:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
         if: env.SLACK_WEBHOOK != ''
         run: python etl/notify.py --mode weekly_digest
-      - name: Upload all data artifacts
+      - name: Upload normalized artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: all-data-artifacts
-          path: data/
+          name: normalized-artifacts
+          path: |
+            data/normalized.parquet.gz
+            data/events.parquet.gz
