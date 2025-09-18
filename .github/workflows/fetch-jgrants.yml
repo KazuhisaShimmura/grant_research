@@ -2,6 +2,9 @@ name: Fetch jGrants
 
 on:
   workflow_dispatch: {}
+  pull_request:
+    branches:
+      - main
   # 毎日自動実行したいときは以下を有効化（UTC21:00=JST朝6時）
   # schedule:
   #   - cron: "0 21 * * *"
@@ -30,13 +33,13 @@ jobs:
       - name: Run jGrants fetch (small run)
         run: |
           mkdir -p data
-          python etl/fetch_jgrants.py --out data/jgrants.jsonl \
-            --max-keywords 20 --max-details 300 --max-pages 30 --page-size 20 --sleep 0.5
+          python etl/fetch_jgrants.py --out data/jgrants.csv \
+            --max-keywords 20 --max-pages 30 --page-size 20 --sleep 0.5
 
       - name: Upload jGrants artifact
         uses: actions/upload-artifact@v4
         with:
-          name: jgrants-jsonl
-          path: data/jgrants.jsonl
+          name: jgrants-csv
+          path: data/jgrants.csv
           if-no-files-found: error
           retention-days: 7
