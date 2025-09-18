@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-jGrants 公開API → CSV 抽出（一覧APIのみ）
-抽出カラム（順序固定）:
-  補助金名, 補助金上限額, 補助率, 対象地域, 従業員数の上限, 募集期間
-- config/keywords.yml の domains.* をキーワードに使用
-- 新旧レスポンス形式（result / content）両対応
-- 進捗ログ、重複(id)除去、指数バックオフ付き
-- 詳細APIは呼ばない（軽量）
+jGrants 公開API → CSV 抽出（一覧＋必ず詳細補完）
+列（順序固定）:
+  補助金名, 補助金上限額, 補助率, 対象地域, 従業員数の上限, 募集期間, 詳細URL
+
+- 一覧APIで基本項目を取得し、必ず詳細APIを1回呼んで「補助率(subsidy_rate)」「詳細URL(front_subsidy_detail_page_url)」を補完
+- 募集中のみ（acceptance=1）をデフォルト。--include-closed で終了案件も含められる。
 """
 
 import argparse
@@ -16,7 +15,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Dict, Iterator, List, Optional, Tuple, Any
 
 import requests
@@ -26,12 +25,13 @@ API_BASE = "https://api.jgrants-portal.go.jp/exp/v1/public/subsidies"
 
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": "imm-research-fetch/1.4-listonly-csv",
+    "User-Agent": "imm-research-fetch/1.7-list+detail-url",
     "Accept": "application/json",
 })
 
-# ====== 抽出対象の列（順序固定）======
-CSV_HEADERS = ["補助金名", "補助金上限額", "補助率", "対象地域", "従業員数の上限", "募集期間"]
+CSV_HEADERS = ["補助金名", "補助金上限額", "補助率", "対象地域", "従業員数の上限", "募集期間", "詳細URL"]
+
+# -------------------- 共通ユーティリティ --------------------
 
 def load_keywords(path: str) -> List[str]:
     with open(path, "r", encoding="utf-8") as f:
@@ -39,7 +39,6 @@ def load_keywords(path: str) -> List[str]:
     kws: List[str] = []
     for _, words in (cfg.get("domains") or {}).items():
         kws.extend(words or [])
-    # 正規化&重複除去
     norm: List[str] = []
     seen = set()
     for k in kws:
@@ -71,12 +70,12 @@ def parse_list_response(data: Dict) -> Tuple[List[Dict], bool]:
     return [], False
 
 def fetch_list_page(keyword: str, page: Optional[int], size: Optional[int],
-                    timeout: int, sleep: float, max_retry: int) -> Dict:
+                    timeout: int, sleep: float, max_retry: int, acceptance: str) -> Dict:
     params: Dict[str, Any] = {
         "keyword": keyword,
         "sort": "created_date",
         "order": "DESC",
-        "acceptance": "0",
+        "acceptance": acceptance,  # 0=すべて / 1=募集中のみ（既定）
     }
     if page is not None:
         params["page"] = page
@@ -89,9 +88,9 @@ def fetch_list_page(keyword: str, page: Optional[int], size: Optional[int],
     return r.json()
 
 def iter_items_for_keyword(keyword: str, page_size: int, max_pages: int,
-                           timeout: int, sleep: float, max_retry: int) -> Iterator[Dict]:
+                           timeout: int, sleep: float, max_retry: int, acceptance: str) -> Iterator[Dict]:
     # 0ページ目（新形式 or 先頭ページ）
-    data = fetch_list_page(keyword, page=None, size=None, timeout=timeout, sleep=sleep, max_retry=max_retry)
+    data = fetch_list_page(keyword, page=None, size=None, timeout=timeout, sleep=sleep, max_retry=max_retry, acceptance=acceptance)
     chunk, has_paging = parse_list_response(data)
     if chunk:
         for it in chunk:
@@ -105,7 +104,7 @@ def iter_items_for_keyword(keyword: str, page_size: int, max_pages: int,
     page = 1
     seen_page_fingerprint: Optional[str] = None
     while page <= max_pages:
-        data = fetch_list_page(keyword, page=page, size=page_size, timeout=timeout, sleep=sleep, max_retry=max_retry)
+        data = fetch_list_page(keyword, page=page, size=page_size, timeout=timeout, sleep=sleep, max_retry=max_retry, acceptance=acceptance)
         content = data.get("content") or []
         page_ids = [x.get("id") for x in content if isinstance(x, dict) and x.get("id")]
         fingerprint = ",".join([str(i) for i in page_ids[:10]])
@@ -123,89 +122,87 @@ def iter_items_for_keyword(keyword: str, page_size: int, max_pages: int,
         page += 1
         time.sleep(sleep)
 
-# ========= ゆるいマッピング（一覧APIで取れる範囲）============
-def first_nonempty(*vals) -> str:
-    for v in vals:
-        if v is None:
-            continue
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-        if isinstance(v, (int, float)):
-            return str(v)
-        if isinstance(v, list):
-            # 文字列化して結合
-            s = ", ".join([str(x) for x in v if x is not None])
-            if s.strip():
-                return s.strip()
-        if isinstance(v, dict):
-            # start/end があれば結合
-            s = v.get("start") or v.get("startDate") or v.get("from")
-            e = v.get("end")   or v.get("endDate")   or v.get("to")
-            if s or e:
-                return f"{s or ''}〜{e or ''}".strip("〜")
-            # dict全体
-            s = json.dumps(v, ensure_ascii=False)
-            if s and s != "{}":
-                return s
-    return ""
+# -------------------- 抽出/補完 --------------------
 
-def fmt_period(item: Dict) -> str:
-    # 募集期間に該当しそうな複数候補
-    # 文字列 or {start/end} or [複数期間] に対応
-    # 候補キーは適宜追加
-    candidates = [
-        item.get("applicationPeriod"),
-        item.get("募集期間"),
-        item.get("period"),
-        item.get("受付期間"),
-        item.get("applicationTerm"),
-        item.get("applyTerm"),
-        item.get("term"),
-    ]
-    val = first_nonempty(*candidates)
-    if val:
-        return val
-    # 開始・終了が別キーで来る可能性
-    s = first_nonempty(item.get("applicationStart"), item.get("startDate"), item.get("start"))
-    e = first_nonempty(item.get("applicationEnd"),   item.get("endDate"),   item.get("end"))
+def iso_to_date(s: Optional[str]) -> str:
+    if not s or not isinstance(s, str):
+        return ""
+    try:
+        # "2020-02-28T16:41:41.090Z" → "2020-02-28"
+        if s.endswith("Z"):
+            s = s.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        return dt.date().isoformat()
+    except Exception:
+        return s  # そのまま返す
+
+def build_period(item: Dict) -> str:
+    s = iso_to_date(item.get("acceptance_start_datetime"))
+    e = iso_to_date(item.get("acceptance_end_datetime"))
     if s or e:
         return f"{s}〜{e}".strip("〜")
     return ""
 
-def extract_row(item: Dict) -> List[str]:
-    # 1) 補助金名
-    name = first_nonempty(
-        item.get("title"), item.get("name"), item.get("subsidyName"), item.get("事業名"), item.get("補助金名")
-    )
+# 詳細のキャッシュ（rate/URLの二重取得を避ける）
+_DETAIL_CACHE: Dict[str, Dict[str, str]] = {}
 
-    # 2) 補助金上限額（例：数値 or "〜円" 等）
-    upper = first_nonempty(
-        item.get("maxGrantAmount"), item.get("grantUpperLimit"), item.get("上限額"), item.get("補助上限額"), item.get("上限")
-    )
+def get_detail_fields(sid: str, timeout: int, sleep: float, max_retry: int) -> Tuple[str, str]:
+    """
+    必ず詳細APIを叩いて (subsidy_rate, front_subsidy_detail_page_url) を返す。
+    """
+    if not sid:
+        return "", ""
 
-    # 3) 補助率（例：0.5 / 50% / 1/2 など揺れ）
-    rate = first_nonempty(
-        item.get("subsidyRate"), item.get("grantRate"), item.get("補助率"), item.get("助成率"), item.get("rate")
-    )
+    if sid in _DETAIL_CACHE:
+        d = _DETAIL_CACHE[sid]
+        return d.get("rate", ""), d.get("url", "")
 
-    # 4) 対象地域（都道府県配列/テキスト/コードなどをゆるく結合）
-    area = first_nonempty(
-        item.get("targetArea"), item.get("対象地域"), item.get("対象エリア"),
-        item.get("prefectures"), item.get("対象都道府県"), item.get("area")
-    )
+    url = f"{API_BASE}/id/{sid}"
+    r = get_with_retry(url, params={}, timeout=timeout, sleep=sleep, max_retry=max_retry)
+    if r.status_code != 200:
+        return "", ""
+    try:
+        j = r.json()
+    except Exception:
+        return "", ""
 
-    # 5) 従業員数の上限
-    emp = first_nonempty(
-        item.get("employeeUpperLimit"), item.get("employeeCountMax"), item.get("従業員数上限"),
-        item.get("対象従業員規模"), item.get("従業員数の上限")
-    )
+    detail = j.get("result", [None])[0] if isinstance(j.get("result"), list) else j
+    rate = (detail or {}).get("subsidy_rate")
+    front_url = (detail or {}).get("front_subsidy_detail_page_url")
+    rate_s = str(rate) if rate is not None else ""
+    url_s = str(front_url) if front_url is not None else ""
 
-    # 6) 募集期間（開始/終了のどれか）
-    period = fmt_period(item)
+    _DETAIL_CACHE[sid] = {"rate": rate_s, "url": url_s}
+    return rate_s, url_s
 
-    return [name, upper, rate, area, emp, period]
+def extract_row(item: Dict, timeout: int, sleep: float, max_retry: int) -> List[str]:
+    sid = item.get("id") or ""
 
-# ============================================================
+    # 1) 補助金名（title）
+    name = (item.get("title") or "").strip()
+
+    # 2) 補助金上限額（subsidy_max_limit）
+    upper = item.get("subsidy_max_limit")
+    upper_str = str(upper) if upper is not None else ""
+
+    # 3) 補助率 ＆ 7) 詳細URL（詳細APIから必ず取得）
+    rate_str, front_url = get_detail_fields(sid, timeout, sleep, max_retry)
+
+    # 4) 対象地域（target_area_search）
+    area = (item.get("target_area_search") or "").strip()
+
+    # 5) 従業員数の上限（target_number_of_employees）
+    emp = (item.get("target_number_of_employees") or "").strip()
+
+    # 6) 募集期間（acceptance_start_datetime / acceptance_end_datetime）
+    period = build_period(item)
+
+    # 7) 詳細URL（front_subsidy_detail_page_url）
+    url_out = front_url
+
+    return [name, upper_str, rate_str, area, emp, period, url_out]
+
+# -------------------- main --------------------
 
 def main():
     p = argparse.ArgumentParser()
@@ -218,6 +215,7 @@ def main():
     p.add_argument("--timeout", type=int, default=30, help="HTTPタイムアウト(秒)")
     p.add_argument("--max-retry", type=int, default=3, help="429/5xx時のリトライ回数")
     p.add_argument("--no-dedupe", action="store_true", help="idによる重複除去を無効化（既定は除去）")
+    p.add_argument("--include-closed", action="store_true", help="募集終了も含める（既定は募集中のみ）")
     args = p.parse_args()
 
     # 出力ディレクトリ
@@ -240,7 +238,7 @@ def main():
     seen_ids: set[str] = set()
     page_size = max(1, min(args.page_size, 50))
     max_pages = max(1, args.max_pages)
-    fetched_at = datetime.now(timezone.utc).isoformat()  # 使わないが残しておくと後で便利
+    acceptance = "0" if args.include_closed else "1"
 
     written = 0
     with open(args.out, "w", encoding="utf-8", newline="") as f:
@@ -257,6 +255,7 @@ def main():
                     timeout=args.timeout,
                     sleep=args.sleep,
                     max_retry=args.max_retry,
+                    acceptance=acceptance,
                 ):
                     if not isinstance(item, dict):
                         continue
@@ -266,7 +265,7 @@ def main():
                             continue
                         seen_ids.add(sid)
 
-                    row = extract_row(item)
+                    row = extract_row(item, timeout=args.timeout, sleep=args.sleep, max_retry=args.max_retry)
                     writer.writerow(row)
                     written += 1
                     got += 1
