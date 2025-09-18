@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-jGrants 公開API → JSONL 取得（一覧APIのみ・軽量版）
+jGrants 公開API → CSV 抽出（一覧APIのみ）
+抽出カラム（順序固定）:
+  補助金名, 補助金上限額, 補助率, 対象地域, 従業員数の上限, 募集期間
 - config/keywords.yml の domains.* をキーワードに使用
 - 新旧レスポンス形式（result / content）両対応
-- 進捗ログを標準出力に表示
-- 無限ループ対策: ページ数上限（--max-pages）/ 同一ページ検出
-- スロットリング対策: スリープ間隔（--sleep）/ ページサイズ（--page-size）
-- 出力は一覧APIの各アイテムをそのままJSONL化＋keyword/fetched_at/page_hintを付与
+- 進捗ログ、重複(id)除去、指数バックオフ付き
+- 詳細APIは呼ばない（軽量）
 """
 
 import argparse
+import csv
 import json
 import os
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple, Any
 
 import requests
 import yaml
@@ -25,9 +26,12 @@ API_BASE = "https://api.jgrants-portal.go.jp/exp/v1/public/subsidies"
 
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": "imm-research-fetch/1.3-listonly",
+    "User-Agent": "imm-research-fetch/1.4-listonly-csv",
     "Accept": "application/json",
 })
+
+# ====== 抽出対象の列（順序固定）======
+CSV_HEADERS = ["補助金名", "補助金上限額", "補助率", "対象地域", "従業員数の上限", "募集期間"]
 
 def load_keywords(path: str) -> List[str]:
     with open(path, "r", encoding="utf-8") as f:
@@ -59,11 +63,7 @@ def get_with_retry(url: str, params: Dict, timeout: int, sleep: float, max_retry
     return last or r
 
 def parse_list_response(data: Dict) -> Tuple[List[Dict], bool]:
-    """
-    戻り: (items, has_paging)
-    - 新形式: {"result": [ ... ]}（ページング無し）
-    - 旧形式: {"content": [ ... ], "last": bool, ...}（ページングあり）
-    """
+    # 戻り: (items, has_paging)
     if isinstance(data.get("result"), list):
         return data["result"], False
     if isinstance(data.get("content"), list):
@@ -72,7 +72,7 @@ def parse_list_response(data: Dict) -> Tuple[List[Dict], bool]:
 
 def fetch_list_page(keyword: str, page: Optional[int], size: Optional[int],
                     timeout: int, sleep: float, max_retry: int) -> Dict:
-    params: Dict[str, str | int] = {
+    params: Dict[str, Any] = {
         "keyword": keyword,
         "sort": "created_date",
         "order": "DESC",
@@ -81,7 +81,7 @@ def fetch_list_page(keyword: str, page: Optional[int], size: Optional[int],
     if page is not None:
         params["page"] = page
     if size is not None:
-        params["size"] = max(1, min(int(size), 50))  # 念のため50上限
+        params["size"] = max(1, min(int(size), 50))
     r = get_with_retry(API_BASE, params=params, timeout=timeout, sleep=sleep, max_retry=max_retry)
     if r.status_code == 400:
         raise requests.HTTPError(f"400 Bad Request: {r.text[:300]}", response=r)
@@ -89,21 +89,19 @@ def fetch_list_page(keyword: str, page: Optional[int], size: Optional[int],
     return r.json()
 
 def iter_items_for_keyword(keyword: str, page_size: int, max_pages: int,
-                           timeout: int, sleep: float, max_retry: int) -> Iterator[Tuple[Dict, Optional[Dict[str, int]]]]:
-    """キーワードで一覧を取得し、各アイテム(dict)とpageヒントを逐次返す。"""
-    # まず新形式（非ページング） or 0ページ目相当を取得
+                           timeout: int, sleep: float, max_retry: int) -> Iterator[Dict]:
+    # 0ページ目（新形式 or 先頭ページ）
     data = fetch_list_page(keyword, page=None, size=None, timeout=timeout, sleep=sleep, max_retry=max_retry)
     chunk, has_paging = parse_list_response(data)
     if chunk:
-        first_hint: Optional[Dict[str, int]] = {"page": 0} if has_paging else None
         for it in chunk:
             if isinstance(it, dict):
-                yield it, first_hint
+                yield it
 
     if not has_paging:
         return
 
-    # 旧形式（ページング）
+    # 旧形式ページング
     page = 1
     seen_page_fingerprint: Optional[str] = None
     while page <= max_pages:
@@ -117,7 +115,7 @@ def iter_items_for_keyword(keyword: str, page_size: int, max_pages: int,
 
         for it in content:
             if isinstance(it, dict):
-                yield it, {"page": page, "size": page_size}
+                yield it
 
         print(f"[INFO]  kw='{keyword}' page={page} got={len(content)}", flush=True)
         if data.get("last", True):
@@ -125,9 +123,93 @@ def iter_items_for_keyword(keyword: str, page_size: int, max_pages: int,
         page += 1
         time.sleep(sleep)
 
+# ========= ゆるいマッピング（一覧APIで取れる範囲）============
+def first_nonempty(*vals) -> str:
+    for v in vals:
+        if v is None:
+            continue
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        if isinstance(v, (int, float)):
+            return str(v)
+        if isinstance(v, list):
+            # 文字列化して結合
+            s = ", ".join([str(x) for x in v if x is not None])
+            if s.strip():
+                return s.strip()
+        if isinstance(v, dict):
+            # start/end があれば結合
+            s = v.get("start") or v.get("startDate") or v.get("from")
+            e = v.get("end")   or v.get("endDate")   or v.get("to")
+            if s or e:
+                return f"{s or ''}〜{e or ''}".strip("〜")
+            # dict全体
+            s = json.dumps(v, ensure_ascii=False)
+            if s and s != "{}":
+                return s
+    return ""
+
+def fmt_period(item: Dict) -> str:
+    # 募集期間に該当しそうな複数候補
+    # 文字列 or {start/end} or [複数期間] に対応
+    # 候補キーは適宜追加
+    candidates = [
+        item.get("applicationPeriod"),
+        item.get("募集期間"),
+        item.get("period"),
+        item.get("受付期間"),
+        item.get("applicationTerm"),
+        item.get("applyTerm"),
+        item.get("term"),
+    ]
+    val = first_nonempty(*candidates)
+    if val:
+        return val
+    # 開始・終了が別キーで来る可能性
+    s = first_nonempty(item.get("applicationStart"), item.get("startDate"), item.get("start"))
+    e = first_nonempty(item.get("applicationEnd"),   item.get("endDate"),   item.get("end"))
+    if s or e:
+        return f"{s}〜{e}".strip("〜")
+    return ""
+
+def extract_row(item: Dict) -> List[str]:
+    # 1) 補助金名
+    name = first_nonempty(
+        item.get("title"), item.get("name"), item.get("subsidyName"), item.get("事業名"), item.get("補助金名")
+    )
+
+    # 2) 補助金上限額（例：数値 or "〜円" 等）
+    upper = first_nonempty(
+        item.get("maxGrantAmount"), item.get("grantUpperLimit"), item.get("上限額"), item.get("補助上限額"), item.get("上限")
+    )
+
+    # 3) 補助率（例：0.5 / 50% / 1/2 など揺れ）
+    rate = first_nonempty(
+        item.get("subsidyRate"), item.get("grantRate"), item.get("補助率"), item.get("助成率"), item.get("rate")
+    )
+
+    # 4) 対象地域（都道府県配列/テキスト/コードなどをゆるく結合）
+    area = first_nonempty(
+        item.get("targetArea"), item.get("対象地域"), item.get("対象エリア"),
+        item.get("prefectures"), item.get("対象都道府県"), item.get("area")
+    )
+
+    # 5) 従業員数の上限
+    emp = first_nonempty(
+        item.get("employeeUpperLimit"), item.get("employeeCountMax"), item.get("従業員数上限"),
+        item.get("対象従業員規模"), item.get("従業員数の上限")
+    )
+
+    # 6) 募集期間（開始/終了のどれか）
+    period = fmt_period(item)
+
+    return [name, upper, rate, area, emp, period]
+
+# ============================================================
+
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--out", required=True, help="出力先（例：data/jgrants_list.jsonl）")
+    p.add_argument("--out", required=True, help="出力先（CSV例：data/jgrants_list.csv）")
     p.add_argument("--keywords-file", default="config/keywords.yml", help="キーワード定義YAMLのパス")
     p.add_argument("--page-size", type=int, default=20, help="一覧取得のページサイズ（旧形式のみ、最大50）")
     p.add_argument("--max-pages", type=int, default=50, help="1キーワードあたりの最大ページ数（無限ループ対策）")
@@ -156,16 +238,19 @@ def main():
     print(f"[INFO] keywords loaded={len(all_keywords)} (using first {len(keywords)})", flush=True)
 
     seen_ids: set[str] = set()
-    written = 0
     page_size = max(1, min(args.page_size, 50))
     max_pages = max(1, args.max_pages)
-    fetched_at = datetime.now(timezone.utc).isoformat()
+    fetched_at = datetime.now(timezone.utc).isoformat()  # 使わないが残しておくと後で便利
 
-    with open(args.out, "w", encoding="utf-8") as f:
+    written = 0
+    with open(args.out, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(CSV_HEADERS)
+
         for i, kw in enumerate(keywords, 1):
-            items_got = 0
+            got = 0
             try:
-                for item, page_hint in iter_items_for_keyword(
+                for item in iter_items_for_keyword(
                     kw,
                     page_size=page_size,
                     max_pages=max_pages,
@@ -181,22 +266,18 @@ def main():
                             continue
                         seen_ids.add(sid)
 
-                    out_obj = dict(item)
-                    out_obj["_keyword"] = kw
-                    out_obj["_fetched_at"] = fetched_at
-                    if page_hint:
-                        out_obj["_page_hint"] = page_hint
-                    # 不要ならここでフィールドを間引くことも可
-                    f.write(json.dumps(out_obj, ensure_ascii=False) + "\n")
+                    row = extract_row(item)
+                    writer.writerow(row)
                     written += 1
-                    items_got += 1
+                    got += 1
                     time.sleep(args.sleep)
+
             except requests.HTTPError as e:
                 print(f"[WARN] skip keyword='{kw}' due to HTTP {getattr(e.response, 'status_code', '??')}: {str(e)[:200]}", flush=True)
                 time.sleep(args.sleep)
                 continue
 
-            print(f"[INFO] [{i}/{len(keywords)}] kw='{kw}' items_got={items_got} written_total={written}", flush=True)
+            print(f"[INFO] [{i}/{len(keywords)}] kw='{kw}' rows_written={got} total={written}", flush=True)
             time.sleep(args.sleep)
 
     print(f"[DONE] wrote {written} rows to {args.out}", flush=True)
