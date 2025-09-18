@@ -15,7 +15,8 @@ import json
 import os
 import sys
 import time
-from typing import Dict, List, Optional, Tuple
+from datetime import datetime, timezone
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import requests
 import yaml
@@ -84,18 +85,25 @@ def fetch_list_page(keyword: str, page: Optional[int], size: Optional[int],
     r.raise_for_status()
     return r.json()
 
-def fetch_ids_for_keyword(keyword: str, page_size: int, max_pages: int,
-                          timeout: int, sleep: float, max_retry: int) -> List[str]:
-    """キーワードで一覧を取得し、IDのリストを返す。無限ループ対策あり。"""
-    ids: List[str] = []
+def iter_ids_for_keyword(keyword: str, page_size: int, max_pages: int,
+                         timeout: int, sleep: float, max_retry: int) -> Iterator[Tuple[str, Optional[Dict[str, int]]]]:
+    """キーワードで一覧を取得し、IDを逐次返す。無限ループ対策あり。"""
+
+    total_ids = 0
 
     # まず新形式（非ページング）を試す
     data = fetch_list_page(keyword, page=None, size=None, timeout=timeout, sleep=sleep, max_retry=max_retry)
     chunk, has_paging = parse_list_response(data)
-    ids.extend([x.get("id") for x in chunk if x.get("id")])
+    first_ids = [x.get("id") for x in chunk if x.get("id")]
+
+    if first_ids:
+        total_ids += len(first_ids)
+        first_hint: Optional[Dict[str, int]] = {"page": 0} if has_paging else None
+        for sid in first_ids:
+            yield sid, first_hint
 
     if not has_paging:
-        return ids
+        return
 
     # 旧形式（ページング）
     page = 1  # 0ページ目は取得済み
@@ -110,15 +118,15 @@ def fetch_ids_for_keyword(keyword: str, page_size: int, max_pages: int,
             break
         seen_page_fingerprint = fingerprint
 
-        ids.extend(page_ids)
-        print(f"[INFO]  kw='{keyword}' page={page} got={len(page_ids)} (total_ids={len(ids)})", flush=True)
+        total_ids += len(page_ids)
+        for sid in page_ids:
+            yield sid, {"page": page, "size": page_size}
+        print(f"[INFO]  kw='{keyword}' page={page} got={len(page_ids)} (total_ids={total_ids})", flush=True)
 
         if data.get("last", True):
             break
         page += 1
         time.sleep(sleep)
-
-    return ids
 
 def fetch_detail(sid: str, timeout: int, sleep: float, max_retry: int) -> Optional[Dict]:
     url = f"{API_BASE}/id/{sid}"
@@ -134,6 +142,22 @@ def fetch_detail(sid: str, timeout: int, sleep: float, max_retry: int) -> Option
         return None
     r.raise_for_status()
     return None
+
+
+def build_augmented_record(detail: Dict, keyword: str, fetched_at: str,
+                           page_hint: Optional[Dict[str, int]]) -> Dict:
+    """詳細データにメタ情報を付与する。"""
+
+    record = dict(detail)
+    record.pop("matched_keywords", None)
+    record["_keyword"] = keyword
+    record["_fetched_at"] = fetched_at
+    if page_hint:
+        record["_page_hint"] = page_hint
+    else:
+        record.pop("_page_hint", None)
+    return record
+
 
 def main():
     p = argparse.ArgumentParser()
@@ -167,43 +191,64 @@ def main():
     keywords = all_keywords[: args.max_keywords]
     print(f"[INFO] keywords loaded={len(all_keywords)} (using first {len(keywords)})", flush=True)
 
-    # 一覧→ID収集
-    all_ids: List[str] = []
-    for i, kw in enumerate(keywords, 1):
-        try:
-            ids = fetch_ids_for_keyword(
-                kw, page_size=max(1, min(args.page_size, 50)),
-                max_pages=max(1, args.max_pages),
-                timeout=args.timeout, sleep=args.sleep, max_retry=args.max_retry
-            )
-        except requests.HTTPError as e:
-            print(f"[WARN] skip keyword='{kw}' due to HTTP {e.response.status_code}: {e.response.text[:200]}", flush=True)
-            continue
-
-        before = len(all_ids)
-        # 重複排除
-        all_ids = list(dict.fromkeys(all_ids + ids))
-        print(f"[INFO] [{i}/{len(keywords)}] kw='{kw}' ids_got={len(ids)} ids_total={len(all_ids)}", flush=True)
-
-        # 詳細取得上限に向けた早期終了（IDが多すぎる場合）
-        if len(all_ids) >= args.max_details:
-            print(f"[INFO] reached max_details({args.max_details}) at keyword='{kw}'", flush=True)
-            break
-
-        time.sleep(args.sleep)
-
-    # 詳細取得
+    seen_ids: set[str] = set()
     written = 0
+    processed = 0
+    total_keywords = len(keywords)
+    page_size = max(1, min(args.page_size, 50))
+    max_pages = max(1, args.max_pages)
+
     with open(args.out, "w", encoding="utf-8") as f:
-        for j, sid in enumerate(all_ids, 1):
+        for idx, kw in enumerate(keywords, 1):
             if written >= args.max_details:
                 break
-            detail = fetch_detail(sid, timeout=args.timeout, sleep=args.sleep, max_retry=args.max_retry)
-            if detail:
-                f.write(json.dumps(detail, ensure_ascii=False) + "\n")
-                written += 1
-            if j % 25 == 0 or j == len(all_ids):
-                print(f"[INFO] details {written}/{min(len(all_ids), args.max_details)} (processed {j})", flush=True)
+
+            items_got = 0
+            try:
+                for sid, page_hint in iter_ids_for_keyword(
+                    kw,
+                    page_size=page_size,
+                    max_pages=max_pages,
+                    timeout=args.timeout,
+                    sleep=args.sleep,
+                    max_retry=args.max_retry,
+                ):
+                    if written >= args.max_details:
+                        break
+                    if not sid or sid in seen_ids:
+                        continue
+
+                    seen_ids.add(sid)
+                    detail = fetch_detail(sid, timeout=args.timeout, sleep=args.sleep, max_retry=args.max_retry)
+                    if detail and isinstance(detail, dict):
+                        fetched_at = datetime.now(timezone.utc).isoformat()
+                        record = build_augmented_record(detail, kw, fetched_at, page_hint)
+                        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                        written += 1
+                        items_got += 1
+                    processed += 1
+                    if processed % 25 == 0:
+                        print(f"[INFO] details written={written} processed={processed}", flush=True)
+                    if written >= args.max_details:
+                        break
+                    time.sleep(args.sleep)
+            except requests.HTTPError as e:
+                print(
+                    f"[WARN] skip keyword='{kw}' due to HTTP {e.response.status_code}: {e.response.text[:200]}",
+                    flush=True,
+                )
+                time.sleep(args.sleep)
+                continue
+
+            print(
+                f"[INFO] [{idx}/{total_keywords}] kw='{kw}' items_got={items_got} total_written={written}",
+                flush=True,
+            )
+
+            if written >= args.max_details:
+                print(f"[INFO] reached max_details({args.max_details}) at keyword='{kw}'", flush=True)
+                break
+
             time.sleep(args.sleep)
 
     print(f"[DONE] wrote {written} rows to {args.out}", flush=True)
