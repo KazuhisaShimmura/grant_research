@@ -13,6 +13,7 @@ jGrants 公開API → CSV/JSONL 抽出（一覧＋必ず詳細補完）
 import argparse
 import csv
 import json
+import re
 import os
 import sys
 import time
@@ -32,6 +33,8 @@ SESSION.headers.update({
 })
 
 CSV_HEADERS = ["補助金名", "補助金上限額", "補助率", "対象地域", "従業員数の上限", "募集期間", "詳細URL"]
+
+_FRACTION_PATTERN = re.compile(r"^\s*\d{1,2}\s*/\s*\d{1,2}\s*$")
 
 # -------------------- 共通ユーティリティ --------------------
 
@@ -247,6 +250,18 @@ def build_outputs(
     return csv_row, json_record
 
 
+def make_csv_row_excel_safe(row: List[str]) -> List[str]:
+    """Excelが日付に誤変換しがちな値を保護する。"""
+
+    safe = list(row)
+    if len(safe) > 2 and isinstance(safe[2], str):
+        rate = safe[2]
+        if rate and _FRACTION_PATTERN.match(rate):
+            inner = rate.strip().replace('"', '""')
+            safe[2] = f'="{inner}"'
+    return safe
+
+
 def resolve_output_paths(primary: str, extra_csv: Optional[str], extra_jsonl: Optional[str]) -> Tuple[List[str], List[str]]:
     def ensure_dir(path: str) -> str:
         abs_path = os.path.abspath(path)
@@ -338,6 +353,8 @@ def main():
 
         jsonl_handles = [stack.enter_context(open(path, "w", encoding="utf-8")) for path in jsonl_paths]
 
+        excel_safe = args.csv_encoding.lower() in {"utf-8-sig", "cp932", "shift_jis", "sjis"}
+
         for i, kw in enumerate(keywords, 1):
             got = 0
             try:
@@ -365,8 +382,9 @@ def main():
                         sleep=args.sleep,
                         max_retry=args.max_retry,
                     )
+                    row_out = make_csv_row_excel_safe(row) if excel_safe else row
                     for writer in csv_writers:
-                        writer.writerow(row)
+                        writer.writerow(row_out)
                     if jsonl_handles:
                         line = json.dumps(json_record, ensure_ascii=False)
                         for handle in jsonl_handles:
