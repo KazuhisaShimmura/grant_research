@@ -287,6 +287,11 @@ def main():
     )
     p.add_argument("--csv-out", help="追加のCSV出力パス（任意）")
     p.add_argument("--jsonl-out", help="追加のJSONL出力パス（任意）")
+    p.add_argument(
+        "--csv-encoding",
+        default="utf-8-sig",
+        help="CSVの文字コード（既定: utf-8-sig。Excel向けはutf-8-sigかcp932）",
+    )
     p.add_argument("--keywords-file", default="config/keywords.yml", help="キーワード定義YAMLのパス")
     p.add_argument("--page-size", type=int, default=20, help="一覧取得のページサイズ（旧形式のみ、最大50）")
     p.add_argument("--max-pages", type=int, default=50, help="1キーワードあたりの最大ページ数（無限ループ対策）")
@@ -324,7 +329,9 @@ def main():
     with ExitStack() as stack:
         csv_writers: List[csv.writer] = []
         for path in csv_paths:
-            fh = stack.enter_context(open(path, "w", encoding="utf-8", newline=""))
+            # 変更点: CSVを指定エンコーディングで書き込み
+            # 理由: Windows版Excelでの文字化けを防ぐため（既定はutf-8-sig）
+            fh = stack.enter_context(open(path, "w", encoding=args.csv_encoding, newline=""))
             writer = csv.writer(fh)
             writer.writerow(CSV_HEADERS)
             csv_writers.append(writer)
