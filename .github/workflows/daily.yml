@@ -14,7 +14,7 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - name: Fetch jGrants
-        run: python etl/fetch_jgrants.py --out data/jgrants.jsonl
+        run: python etl/fetch_jgrants.py --out data/jgrants.jsonl --csv-out data/jgrants.csv
       - name: Fetch Prefecture pages
         run: |
           for pref in tokyo kanagawa saitama chiba; do
@@ -62,3 +62,10 @@ jobs:
             data/*.jsonl.gz
             data/normalized.parquet.gz
             data/events.parquet.gz
+      - name: Upload jGrants CSV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jgrants-csv
+          path: data/jgrants.csv
+          if-no-files-found: error
+          retention-days: 7

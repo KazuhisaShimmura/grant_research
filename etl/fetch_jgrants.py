@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-jGrants 公開API → CSV 抽出（一覧＋必ず詳細補完）
+jGrants 公開API → CSV/JSONL 抽出（一覧＋必ず詳細補完）
 列（順序固定）:
   補助金名, 補助金上限額, 補助率, 対象地域, 従業員数の上限, 募集期間, 詳細URL
 
 - 一覧APIで基本項目を取得し、必ず詳細APIを1回呼んで「補助率(subsidy_rate)」「詳細URL(front_subsidy_detail_page_url)」を補完
+- 出力形式は拡張子（.csv / .jsonl|.ndjson）または追加オプションで自動判定
 - 募集中のみ（acceptance=1）をデフォルト。--include-closed で終了案件も含められる。
 """
 
@@ -15,8 +16,9 @@ import json
 import os
 import sys
 import time
+from contextlib import ExitStack
 from datetime import datetime
-from typing import Dict, Iterator, List, Optional, Tuple, Any
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import requests
 import yaml
@@ -136,12 +138,21 @@ def iso_to_date(s: Optional[str]) -> str:
     except Exception:
         return s  # そのまま返す
 
-def build_period(item: Dict) -> str:
-    s = iso_to_date(item.get("acceptance_start_datetime"))
-    e = iso_to_date(item.get("acceptance_end_datetime"))
-    if s or e:
-        return f"{s}〜{e}".strip("〜")
-    return ""
+def compute_period_fields(item: Dict[str, Any]) -> Tuple[str, Optional[str], Optional[str]]:
+    """Return formatted period text and (start, end) dates if available."""
+
+    s_raw = iso_to_date(item.get("acceptance_start_datetime"))
+    e_raw = iso_to_date(item.get("acceptance_end_datetime"))
+    start = s_raw or None
+    end = e_raw or None
+
+    if start and end:
+        return f"{start}〜{end}", start, end
+    if start:
+        return start, start, None
+    if end:
+        return end, None, end
+    return "", None, None
 
 # 詳細のキャッシュ（rate/URLの二重取得を避ける）
 _DETAIL_CACHE: Dict[str, Dict[str, str]] = {}
@@ -175,7 +186,13 @@ def get_detail_fields(sid: str, timeout: int, sleep: float, max_retry: int) -> T
     _DETAIL_CACHE[sid] = {"rate": rate_s, "url": url_s}
     return rate_s, url_s
 
-def extract_row(item: Dict, timeout: int, sleep: float, max_retry: int) -> List[str]:
+def build_outputs(
+    item: Dict[str, Any],
+    keyword: str,
+    timeout: int,
+    sleep: float,
+    max_retry: int,
+) -> Tuple[List[str], Dict[str, Any]]:
     sid = item.get("id") or ""
 
     # 1) 補助金名（title）
@@ -195,18 +212,81 @@ def extract_row(item: Dict, timeout: int, sleep: float, max_retry: int) -> List[
     emp = (item.get("target_number_of_employees") or "").strip()
 
     # 6) 募集期間（acceptance_start_datetime / acceptance_end_datetime）
-    period = build_period(item)
+    period, period_start, period_end = compute_period_fields(item)
 
     # 7) 詳細URL（front_subsidy_detail_page_url）
     url_out = front_url
 
-    return [name, upper_str, rate_str, area, emp, period, url_out]
+    csv_row = [name, upper_str, rate_str, area, emp, period, url_out]
+
+    json_record: Dict[str, Any] = dict(item)
+    json_record["id"] = sid or json_record.get("id")
+    json_record["title"] = name or json_record.get("title")
+    json_record["subsidy_cap"] = upper_str or None
+    json_record["subsidy_rate"] = rate_str or None
+    json_record["geography"] = area or None
+    json_record["employee_limit"] = emp or None
+    if period_start or period_end:
+        json_record["applicationPeriod"] = {
+            "start": period_start or None,
+            "end": period_end or None,
+        }
+    if period:
+        json_record["application_period"] = period
+    if period_start:
+        json_record.setdefault("acceptanceStartDate", period_start)
+    if period_end:
+        json_record.setdefault("acceptanceEndDate", period_end)
+    if front_url:
+        json_record["detailUrl"] = front_url
+        json_record.setdefault("publicUrl", front_url)
+        json_record["front_subsidy_detail_page_url"] = front_url
+    json_record["source"] = "jgrants"
+    json_record["search_keyword"] = keyword
+
+    return csv_row, json_record
+
+
+def resolve_output_paths(primary: str, extra_csv: Optional[str], extra_jsonl: Optional[str]) -> Tuple[List[str], List[str]]:
+    def ensure_dir(path: str) -> str:
+        abs_path = os.path.abspath(path)
+        directory = os.path.dirname(abs_path)
+        if directory and not os.path.exists(directory):
+            os.makedirs(directory, exist_ok=True)
+        return abs_path
+
+    csv_paths: List[str] = []
+    jsonl_paths: List[str] = []
+
+    def add(path: str, bucket: List[str]) -> None:
+        abs_path = ensure_dir(path)
+        if abs_path not in bucket:
+            bucket.append(abs_path)
+
+    primary_lower = primary.lower()
+    if primary_lower.endswith(".jsonl") or primary_lower.endswith(".ndjson"):
+        add(primary, jsonl_paths)
+    else:
+        add(primary, csv_paths)
+
+    if extra_csv:
+        add(extra_csv, csv_paths)
+    if extra_jsonl:
+        add(extra_jsonl, jsonl_paths)
+
+    return csv_paths, jsonl_paths
 
 # -------------------- main --------------------
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--out", required=True, help="出力先（CSV例：data/jgrants_list.csv）")
+    p.add_argument(
+        "--out",
+        required=True,
+        help="出力先（拡張子でCSV/JSONLを自動判定。例：data/jgrants.csv / data/jgrants.jsonl）",
+    )
+    p.add_argument("--csv-out", help="追加のCSV出力パス（任意）")
+    p.add_argument("--jsonl-out", help="追加のJSONL出力パス（任意）")
     p.add_argument("--keywords-file", default="config/keywords.yml", help="キーワード定義YAMLのパス")
     p.add_argument("--page-size", type=int, default=20, help="一覧取得のページサイズ（旧形式のみ、最大50）")
     p.add_argument("--max-pages", type=int, default=50, help="1キーワードあたりの最大ページ数（無限ループ対策）")
@@ -218,10 +298,10 @@ def main():
     p.add_argument("--include-closed", action="store_true", help="募集終了も含める（既定は募集中のみ）")
     args = p.parse_args()
 
-    # 出力ディレクトリ
-    out_dir = os.path.dirname(os.path.abspath(args.out))
-    if out_dir and not os.path.exists(out_dir):
-        os.makedirs(out_dir, exist_ok=True)
+    csv_paths, jsonl_paths = resolve_output_paths(args.out, args.csv_out, args.jsonl_out)
+    if not csv_paths and not jsonl_paths:
+        print("[ERROR] no output path resolved", file=sys.stderr)
+        sys.exit(1)
 
     # キーワード読込
     try:
@@ -241,9 +321,15 @@ def main():
     acceptance = "0" if args.include_closed else "1"
 
     written = 0
-    with open(args.out, "w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(CSV_HEADERS)
+    with ExitStack() as stack:
+        csv_writers: List[csv.writer] = []
+        for path in csv_paths:
+            fh = stack.enter_context(open(path, "w", encoding="utf-8", newline=""))
+            writer = csv.writer(fh)
+            writer.writerow(CSV_HEADERS)
+            csv_writers.append(writer)
+
+        jsonl_handles = [stack.enter_context(open(path, "w", encoding="utf-8")) for path in jsonl_paths]
 
         for i, kw in enumerate(keywords, 1):
             got = 0
@@ -265,21 +351,42 @@ def main():
                             continue
                         seen_ids.add(sid)
 
-                    row = extract_row(item, timeout=args.timeout, sleep=args.sleep, max_retry=args.max_retry)
-                    writer.writerow(row)
+                    row, json_record = build_outputs(
+                        item,
+                        keyword=kw,
+                        timeout=args.timeout,
+                        sleep=args.sleep,
+                        max_retry=args.max_retry,
+                    )
+                    for writer in csv_writers:
+                        writer.writerow(row)
+                    if jsonl_handles:
+                        line = json.dumps(json_record, ensure_ascii=False)
+                        for handle in jsonl_handles:
+                            handle.write(line + "\n")
+
                     written += 1
                     got += 1
                     time.sleep(args.sleep)
 
             except requests.HTTPError as e:
-                print(f"[WARN] skip keyword='{kw}' due to HTTP {getattr(e.response, 'status_code', '??')}: {str(e)[:200]}", flush=True)
+                print(
+                    f"[WARN] skip keyword='{kw}' due to HTTP {getattr(e.response, 'status_code', '??')}: {str(e)[:200]}",
+                    flush=True,
+                )
                 time.sleep(args.sleep)
                 continue
 
             print(f"[INFO] [{i}/{len(keywords)}] kw='{kw}' rows_written={got} total={written}", flush=True)
             time.sleep(args.sleep)
 
-    print(f"[DONE] wrote {written} rows to {args.out}", flush=True)
+    outputs: List[str] = []
+    if csv_paths:
+        outputs.append(f"CSV={len(csv_paths)}")
+    if jsonl_paths:
+        outputs.append(f"JSONL={len(jsonl_paths)}")
+    summary = ", ".join(outputs) if outputs else "no files"
+    print(f"[DONE] wrote {written} rows ({summary})", flush=True)
 
 if __name__ == "__main__":
     main()
